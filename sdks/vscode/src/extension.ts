@@ -2,6 +2,7 @@
 export function deactivate() {}
 
 import * as vscode from "vscode"
+import { WebviewTerminal } from "./webview-terminal"
 
 const TERMINAL_NAME = "opencode"
 
@@ -19,6 +20,11 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     await openTerminal()
+  })
+
+  let openWebviewTerminalDisposable = vscode.commands.registerCommand("opencode.openWebviewTerminal", async () => {
+    const port = Math.floor(Math.random() * (65535 - 16384 + 1)) + 16384
+    await startServerAndConnect(port, context)
   })
 
   let addFilepathDisposable = vscode.commands.registerCommand("opencode.addFilepathToTerminal", async () => {
@@ -40,7 +46,38 @@ export function activate(context: vscode.ExtensionContext) {
     }
   })
 
-  context.subscriptions.push(openTerminalDisposable, addFilepathDisposable)
+  context.subscriptions.push(openTerminalDisposable, openNewTerminalDisposable, openWebviewTerminalDisposable, addFilepathDisposable)
+
+  async function startServerAndConnect(port: number, ctx: vscode.ExtensionContext) {
+    // Start opencode server in background terminal (hidden)
+    const serverTerminal = vscode.window.createTerminal({
+      name: "opencode-server",
+      hideFromUser: true,
+      env: { OPENCODE_CALLER: "vscode" },
+    })
+    serverTerminal.sendText(`opencode --port ${port}`)
+
+    // Wait for server to be ready
+    let tries = 20
+    let connected = false
+    do {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      try {
+        await fetch(`http://localhost:${port}/app`)
+        connected = true
+        break
+      } catch (e) {}
+      tries--
+    } while (tries > 0)
+
+    if (!connected) {
+      vscode.window.showErrorMessage("Failed to start opencode server")
+      serverTerminal.dispose()
+      return
+    }
+
+    await WebviewTerminal.open(ctx, port)
+  }
 
   async function openTerminal() {
     // Create a new terminal in split screen

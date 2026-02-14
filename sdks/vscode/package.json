@@ -43,6 +43,14 @@
       {
         "command": "opencode.addFilepathToTerminal",
         "title": "Add Filepath to Terminal"
+      },
+      {
+        "command": "opencode.openWebviewTerminal",
+        "title": "Open opencode (Webview)",
+        "icon": {
+          "light": "images/button-dark.svg",
+          "dark": "images/button-light.svg"
+        }
       }
     ],
     "menus": {
