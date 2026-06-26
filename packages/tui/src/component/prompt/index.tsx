@@ -56,6 +56,7 @@ import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
+import { createFollowupQueue } from "./followup-queue"
 
 export type PromptProps = {
   sessionID?: string
@@ -157,6 +158,8 @@ export function Prompt(props: PromptProps) {
   const dialog = useDialog()
   const toast = useToast()
   const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
+
+  const followup = createFollowupQueue()
   const history = usePromptHistory()
   const stash = usePromptStash()
   const keymap = useOpencodeKeymap()
@@ -393,6 +396,12 @@ export function Prompt(props: PromptProps) {
         run: () => {
           if (auto()?.visible) return
           if (!input.focused) return
+          // Clearing queued follow-ups takes priority over interrupting.
+          if (followup.size() > 0) {
+            followup.clear()
+            dialog.clear()
+            return
+          }
           // TODO: this should be its own command
           if (store.mode === "shell") {
             setStore("mode", "normal")
@@ -923,6 +932,20 @@ export function Prompt(props: PromptProps) {
 
   let submitting = false
   async function submit() {
+    // Follow-up queue: while a generation is running, enqueue the typed prompt
+    // instead of sending it immediately. It is auto-dispatched when the current
+    // turn finishes (see the falling-edge effect after submitInner).
+    if (props.sessionID && status().type !== "idle") {
+      const text = (store.prompt.input ?? "").trim()
+      if (text) {
+        followup.enqueue({ input: store.prompt.input, parts: [...store.prompt.parts] })
+        input.extmarks.clear()
+        setStore("prompt", { input: "", parts: [] })
+        setStore("extmarkToPartIndex", new Map())
+        props.onSubmit?.()
+      }
+      return false
+    }
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
     // input's native onSubmit racing another dispatch). Without this guard,
     // a second call slips past the empty-input check before the first call
@@ -1139,6 +1162,22 @@ export function Prompt(props: PromptProps) {
     if (finishMoveProgress) move.finishSubmit()
     return true
   }
+
+  // Dispatch queued follow-ups: send the next one when a generation ends.
+  // Falling-edge check ensures only one item fires per generation cycle.
+  let wasGenerating = status().type !== "idle"
+  createEffect(() => {
+    const generating = status().type !== "idle"
+    const ended = wasGenerating && !generating
+    wasGenerating = generating
+    if (!ended || !props.sessionID) return
+    const next = followup.peek()
+    if (!next) return
+    followup.dequeue()
+    setStore("prompt", { input: next.input, parts: next.parts })
+    setStore("extmarkToPartIndex", new Map())
+    void submit()
+  })
 
   function pasteText(text: string, virtualText: string) {
     const currentOffset = input.cursorOffset
@@ -1573,10 +1612,17 @@ export function Prompt(props: PromptProps) {
                     })()}
                   </box>
                 </box>
+                <Show when={followup.size() > 0}>
+                  <text fg={theme.primary}>↻ {followup.size()} queued</text>
+                </Show>
                 <text fg={store.interrupt > 0 ? theme.primary : theme.text}>
                   esc{" "}
                   <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
-                    {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
+                    {followup.size() > 0
+                      ? "to clear"
+                      : store.interrupt > 0
+                        ? "again to interrupt"
+                        : "interrupt"}
                   </span>
                 </text>
               </box>
